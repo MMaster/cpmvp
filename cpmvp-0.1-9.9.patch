@@ -1,0 +1,832 @@
+diff --new-file -r -u orig/coreutils-9.9/src/copy-file-data.c coreutils-9.9/src/copy-file-data.c
+--- orig/coreutils-9.9/src/copy-file-data.c	2025-11-04 17:32:12.000000000 +0100
++++ coreutils-9.9/src/copy-file-data.c	2026-01-31 18:07:01.646965319 +0100
+@@ -24,6 +24,7 @@
+ #include "backupfile.h"
+ #include "buffer-lcm.h"
+ #include "copy.h"
++#include "cpmv-progress.h" // progress mod
+ #include "fadvise.h"
+ #include "full-write.h"
+ #include "ioblksize.h"
+@@ -125,12 +126,14 @@
+   /* If not looking for holes, use copy_file_range if functional,
+      but don't use if reflink disallowed as that may be implicit.  */
+   if (!hole_size && allow_reflink)
++  {
+     while (0 < max_n_read)
+       {
+         /* Copy at most COPY_MAX bytes at a time; this is min
+            (SSIZE_MAX, SIZE_MAX) truncated to a value that is
+            surely aligned well.  */
+         ssize_t copy_max = MIN (SSIZE_MAX, SIZE_MAX) >> 30 << 30;
++        cpmvp_print_maybe (total_n_read); // progress mod
+         ssize_t n_copied = copy_file_range (src_fd, nullptr, dest_fd, nullptr,
+                                             MIN (max_n_read, copy_max), 0);
+         if (n_copied == 0)
+@@ -175,6 +178,8 @@
+         max_n_read -= n_copied;
+         total_n_read += n_copied;
+       }
++    cpmvp_file_done (total_n_read); // progress mod
++  }
+   else
+     debug->offload = COPY_DEBUG_AVOIDED;
+ 
+@@ -184,6 +189,7 @@
+ 
+   while (0 < max_n_read)
+     {
++      cpmvp_print_maybe (total_n_read); // progress mod
+       if (!*abuf)
+         *abuf = xalignalloc (getpagesize (), buf_size);
+       char *buf = *abuf;
+@@ -261,6 +267,7 @@
+          for each file.  Unfortunately that doesn't work for
+          certain files in /proc or /sys with linux kernels.  */
+     }
++  cpmvp_file_done (total_n_read); // progress mod
+ 
+   if (hole_size)
+     *hole_size = make_hole ? psize : 0;
+@@ -579,6 +586,7 @@
+       buf_size -= buf_size % blcm;
+     }
+ 
++  cpmvp_init_file_tx (iname); // progress mod
+   char *buf = nullptr;
+   intmax_t result;
+   off_t hole_size = 0;
+diff --new-file -r -u orig/coreutils-9.9/src/cp.c coreutils-9.9/src/cp.c
+--- orig/coreutils-9.9/src/cp.c	2025-09-17 21:34:58.000000000 +0200
++++ coreutils-9.9/src/cp.c	2026-02-12 16:25:58.164036158 +0100
+@@ -21,12 +21,14 @@
+ #include <sys/types.h>
+ #include <getopt.h>
+ #include <selinux/label.h>
++#include <signal.h> // progress mod
+ 
+ #include "system.h"
+ #include "argmatch.h"
+ #include "assure.h"
+ #include "backupfile.h"
+ #include "copy.h"
++#include "cpmv-progress.h" // progress mod
+ #include "cp-hash.h"
+ #include "filenamecat.h"
+ #include "ignore-value.h"
+@@ -141,6 +143,7 @@
+   {"symbolic-link", no_argument, nullptr, 's'},
+   {"target-directory", required_argument, nullptr, 't'},
+   {"update", optional_argument, nullptr, 'u'},
++  {"progress-bar", no_argument, nullptr, 'g'}, // progress mod
+   {"verbose", no_argument, nullptr, 'v'},
+   {"keep-directory-symlink", no_argument, nullptr,
+     KEEP_DIRECTORY_SYMLINK_OPTION},
+@@ -181,16 +184,22 @@
+       fputs (_("\
+       --debug                  explain how a file is copied.  Implies -v\n\
+ "), stdout);
++      /* progress mod : -g help text below */
+       fputs (_("\
+   -f, --force                  if an existing destination file cannot be\n\
+                                  opened, remove it and try again (this option\n\
+                                  is ignored when the -n option is also used)\n\
++  -g, --progress-bar           add a progress bar.\n\
++                                 Note that this doesn't work with reflink,\n\
++                                 reflink will be automatically disabled\n\
+   -i, --interactive            prompt before overwrite (overrides a previous -n\
+ \n\
+                                   option)\n\
+   -H                           follow command-line symbolic links in SOURCE\n\
+ "), stdout);
+       fputs (_("\
++"), stdout);
++      fputs (_("\
+   -l, --link                   hard link files instead of copying\n\
+   -L, --dereference            always follow symbolic links in SOURCE\n\
+ "), stdout);
+@@ -684,6 +693,7 @@
+ 
+   if (target_directory)
+     {
++      cpmvp_init (n_files, file, x); // progress mod
+       /* cp file1...filen edir
+          Copy the files 'file1' through 'filen'
+          to the existing directory 'edir'. */
+@@ -793,6 +803,7 @@
+                  _("with --parents, the destination must be a directory"));
+           usage (EXIT_FAILURE);
+         }
++      cpmvp_init (1, file, x); // progress mod
+ 
+       /* When the force and backup options have been specified and
+          the source and destination are the same name for an existing
+@@ -821,6 +832,7 @@
+ 
+       ok = copy (source, dest, AT_FDCWD, dest, -new_dst, x, &unused, nullptr);
+     }
++  cpmvp_cleanup (true); // progress mod
+ 
+   return ok;
+ }
+@@ -996,7 +1008,8 @@
+   selinux_enabled = (0 < is_selinux_enabled ());
+   cp_option_init (&x);
+ 
+-  while ((c = getopt_long (argc, argv, "abdfHilLnprst:uvxPRS:TZ",
++  /* progress mod : g option */
++  while ((c = getopt_long (argc, argv, "abdfgHilLnprst:uvxPRS:TZ",
+                            long_opts, nullptr))
+          != -1)
+     {
+@@ -1057,6 +1070,13 @@
+           x.unlink_dest_after_failed_open = true;
+           break;
+ 
++        /* BEGIN progress mod */
++        case 'g':
++          cpmvp_ctx.enabled = true;
++          signal(SIGINT, cpmvp_interrupt_handler);
++          break;
++        /* END progress mod */
++
+         case 'H':
+           x.dereference = DEREF_COMMAND_LINE_ARGUMENTS;
+           break;
+@@ -1223,6 +1243,11 @@
+       usage (EXIT_FAILURE);
+     }
+ 
++  /* BEGIN progress mod */
++  if (cpmvp_ctx.enabled)
++    x.reflink_mode = REFLINK_NEVER;
++  /* END progress mod */
++
+   x.backup_type = (make_backups
+                    ? xget_version (_("backup type"),
+                                    version_control_string)
+diff --new-file -r -u orig/coreutils-9.9/src/cpmv-progress.c coreutils-9.9/src/cpmv-progress.c
+--- orig/coreutils-9.9/src/cpmv-progress.c	1970-01-01 01:00:00.000000000 +0100
++++ coreutils-9.9/src/cpmv-progress.c	2026-02-12 16:25:38.385223872 +0100
+@@ -0,0 +1,485 @@
++#include <config.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/types.h>
++#include <sys/time.h>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <string.h>
++#include <unistd.h>
++#include <errno.h>
++#include <error.h>
++#include <limits.h>
++
++#include "cpmv-progress.h"
++
++struct cpmv_progress_s cpmvp_ctx = { 0 };
++
++FILE * cpmvp_spawn( const char *cmd, char *const argv[] )
++{
++  FILE *ret = NULL;
++  int pfd_read[2];
++  pid_t pid;
++
++  if (cmd == NULL || argv == NULL)
++    return ret;
++
++  if (pipe(pfd_read) < 0) {
++    error(0, errno, "pipe: %s", cmd);
++    return ret;
++  }
++
++  if ((pid = fork()) == 0) {
++    int err = dup2(pfd_read[1], 1) < 0;
++    close(pfd_read[0]);
++    close(pfd_read[1]);
++
++    if (err)
++      error(EXIT_FAILURE, errno, "dup2: %s", cmd);
++    execvp(cmd, argv);
++    error(EXIT_FAILURE, errno, "exec: %s", cmd);
++  }
++
++  close(pfd_read[1]);
++
++  if (pid < 0) {
++    close(pfd_read[0]);
++    error(0, errno, "fork: %s", cmd);
++    return ret;
++  }
++
++  ret = fdopen(pfd_read[0], "r");
++  return ret;
++}
++
++// Return elapsed seconds from start to end as double
++double cpmvp_sec_elapsed( struct timeval start, struct timeval end )
++{
++  long usec_elapsed = end.tv_usec - start.tv_usec;
++  double sec_elapsed = (double)usec_elapsed / 1000000.;
++  return sec_elapsed + (double)(end.tv_sec - start.tv_sec);
++}
++
++// Format time to dst string (max length: 12)
++void cpmvp_format_time( char * dst, long seconds )
++{
++  // days
++  long days = seconds / (60 * 60 * 24);
++  if (days > 99)
++    days = 99;
++  // hours
++  int hr = (int)((seconds / (60 * 60)) % 24);
++  // minutes
++  int min = (int)((seconds / 60) % 60);
++  // seconds
++  int sec = (int)(seconds % 60);
++
++  if (days >= 1) {
++    sprintf(dst, "%dd %02d:%02d:%02d", days, hr, min, sec); // XXd XX:YY:ZZ (len: 12)
++  } else if (hr >= 1) {
++    sprintf(dst, "%d:%02d:%02d", hr, min, sec); // XX:YY:ZZ (len: 8)
++  } else if (min >= 1) {
++    sprintf(dst, "%dm %02ds", min, sec); // XXm YYs (len: 7)
++  } else if (seconds < 0) {
++    sprintf(dst, "?s");
++  } else {
++    sprintf(dst, "%ds", sec); // (len: 3)
++  }
++}
++
++// Format size to dst string (max length: 9)
++int cpmvp_format_file_size( char * dst, off_t size, bool padding )
++{
++  int unit_base = 0;
++  double size_based = (double)size;
++  while (size_based >= 1000.) {
++    size_based /= 1024.;
++    unit_base++;
++  }
++
++  const char * units[] = { "B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
++  const char * unit_str = "??B";
++  if (unit_base >= 0 && unit_base < sizeof(units) / sizeof(units[0]))
++    unit_str = units[unit_base];
++
++  if (padding)
++    return sprintf(dst, "%5.1f %s", size_based, unit_str);
++  return sprintf(dst, "%.1f %s", size_based, unit_str);
++}
++
++void cpmvp_s_bar( char * dst, int line_len, off_t current, off_t total )
++{
++  double percent = (double)current / total * 100.;
++  int len = snprintf(dst + (line_len - 6), 5, "%4.1f", percent);
++  dst[line_len - 6 + len] = ' ';
++
++  int bar_len = line_len - 10;
++  for (int i = 1; i <= line_len - 9; i++) {
++    if (percent > 100. * (i-1) / bar_len)
++      dst[i] = '=';
++    else if (percent > 100. * (i-2) / bar_len)
++      dst[i] = '>';
++    else
++      dst[i] = ' ';
++  }
++}
++
++void cpmvp_init( int n_files, char **file, const struct cp_options *cp_opts )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  if (cpmvp_ctx.files_total == 0) {
++    cpmvp_ctx.size_total = 0;
++    cpmvp_ctx.size_written = 0;
++    cpmvp_ctx.files_total = 0;
++    cpmvp_ctx.files_processed = 0;
++    cpmvp_ctx.dirs_processed = 0;
++    cpmvp_ctx.is_move = cp_opts->move_mode;
++  }
++
++  struct timeval start_time, print_time;
++  gettimeofday(&start_time, NULL);
++  print_time = start_time;
++  cpmvp_ctx.time_start = start_time;
++
++  printf("\rcalculating total size... ");
++  fflush(stdout);
++
++  struct timeval cur_time;
++  FILE *fp;
++  char output[CPMVP_MAX_LINE_LEN];
++  struct stat st;
++  char s_size[10];
++  char *find_args[16] = { "find" };
++  int find_arg_i = 1;
++  int find_start_point_i = 1;
++
++  if (cp_opts->dereference == DEREF_NEVER)
++    find_args[find_arg_i++] = "-P";
++  else if (cp_opts->dereference == DEREF_COMMAND_LINE_ARGUMENTS)
++    find_args[find_arg_i++] = "-H";
++  else if (cp_opts->dereference == DEREF_ALWAYS)
++    find_args[find_arg_i++] = "-L";
++
++  find_start_point_i = find_arg_i;
++  find_args[find_arg_i++] = NULL;
++  find_args[find_arg_i++] = "-type";
++  find_args[find_arg_i++] = "f";
++
++  if (cp_opts->one_file_system)
++    find_args[find_arg_i++] = "-mount";
++
++  if (!cp_opts->recursive) {
++    find_args[find_arg_i++] = "-maxdepth";
++    find_args[find_arg_i++] = "0";
++  }
++
++  find_args[find_arg_i++] = NULL;
++
++  /* find all files and get their size */
++  for (int j = 0; j < n_files; j++) {
++    /* call find for each file entry */
++    find_args[find_start_point_i] = (char *)file[j];
++    fp = cpmvp_spawn("find", find_args);
++    if ( fp == NULL)
++      printf("failed to run find\n");
++    else
++    {
++      char *fpath_buf = NULL;
++      size_t fpath_buf_size = 0;
++      int line_count = 0;
++      ssize_t line_size = getline(&fpath_buf, &fpath_buf_size, fp);
++      off_t size_found = 0;
++
++      while (line_size > 0) {
++        fpath_buf[line_size - 1] = '\0'; // remove new line
++        if (stat(fpath_buf, &st) == 0)
++            size_found += st.st_size;
++
++        line_count++;
++        line_size = getline(&fpath_buf, &fpath_buf_size, fp);
++
++        /* print out intermediate info */
++        gettimeofday(&cur_time, NULL);
++        double sec_elapsed = cpmvp_sec_elapsed(print_time, cur_time);
++        if (sec_elapsed > CPMVP_REDRAW_TIME) {
++          cpmvp_format_file_size(s_size, cpmvp_ctx.size_total + size_found, true);
++          printf("\rcalculating total size... %d file(s): %s",
++            cpmvp_ctx.files_total + line_count, s_size);
++          fflush(stdout);
++          print_time = cur_time;
++        }
++      }
++      free(fpath_buf);
++      pclose(fp);
++
++      cpmvp_ctx.files_total += line_count;
++      cpmvp_ctx.size_total += size_found;
++
++      cpmvp_format_file_size(s_size, cpmvp_ctx.size_total, true);
++      printf("\rcalculating total size... %d file(s): %s", cpmvp_ctx.files_total, s_size);
++      fflush(stdout);
++    }
++  }
++  printf("\r"); // move cursor to beginning of line
++
++  gettimeofday (&cpmvp_ctx.printed_time, NULL);
++}
++
++/* Interrupt handler to clear the terminal on CTRL+C */
++void cpmvp_interrupt_handler( int )
++{
++  if (!cpmvp_ctx.enabled) {
++    exit(130);
++    return;
++  }
++
++  /* clean terminal */
++  int line_cnt = (cpmvp_ctx.files_total > 1 ? 5 : 2);
++  /* don't clear first line it may contain eg. overwrite confirmation */
++  printf("\n");
++  for (int i = 0; i < line_cnt; i++)
++    printf("\033[K\n");
++  printf("\r\033[%dA", line_cnt);
++  fflush(stdout);
++  exit(130);
++}
++
++/* End of copy/move - clear terminal & print out stats */
++void cpmvp_cleanup( bool clear_term )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  /* clean terminal */
++  if (clear_term) {
++    int line_cnt = (cpmvp_ctx.files_total > 1 ? 5 : 2);
++    /* don't clear first line it may contain eg. overwrite confirmation */
++    printf("\n");
++    for (int i = 0; i < line_cnt; i++)
++      printf("\033[K\n");
++    printf("\r\033[%dA", line_cnt);
++  }
++
++  /* end time */
++  struct timeval end_time;
++  gettimeofday(&end_time, NULL);
++  double sec_elapsed = cpmvp_sec_elapsed(cpmvp_ctx.time_start, end_time);
++
++  /* get total size */
++  char s_size_written[10];
++  cpmvp_format_file_size(s_size_written, cpmvp_ctx.size_total, false); // max 9 chars
++  /* TODO: using total written would be more correct, but may not match estimated total */
++
++  /* calculate speed - for sanity consider at least 1ms has passed */
++  off_t speed = (off_t)(sec_elapsed > 0
++    ? cpmvp_ctx.size_written / sec_elapsed
++    : 0.001);
++  char s_speed[10];
++  cpmvp_format_file_size(s_speed, speed >= 0 ? speed : 0, false); // max 9 chars
++
++  char s_fmt_total_time[13];
++  cpmvp_format_time(s_fmt_total_time, (long)sec_elapsed); // 12 chars max
++  if (cpmvp_ctx.dirs_processed > 0 && cpmvp_ctx.files_processed > 0)
++    printf("\033[K%d dir(s) and %d file(s) (%s) %s in %s (%s/s).\n",
++      cpmvp_ctx.dirs_processed, cpmvp_ctx.files_processed, s_size_written,
++      cpmvp_ctx.is_move ? "moved" : "copied", s_fmt_total_time, s_speed);
++  else
++    printf("\033[K%d %s (%s) %s in %s (%s/s).\n",
++      cpmvp_ctx.dirs_processed > 0 ? cpmvp_ctx.dirs_processed : cpmvp_ctx.files_processed,
++      cpmvp_ctx.dirs_processed > 0 ? "dir(s)" : "file(s)",
++      s_size_written, cpmvp_ctx.is_move ? "moved" : "copied", s_fmt_total_time, s_speed);
++}
++
++void cpmvp_init_file_tx( char const *src_name )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  /* get console width */
++  int line_len = 70; // at least 70 chars
++  struct winsize win;
++  if (ioctl (STDOUT_FILENO, TIOCGWINSZ, (char *) &win) == 0 && win.ws_col > 0)
++    if (win.ws_col > line_len) /* We need minimum line length to fit info */
++      line_len = win.ws_col;
++  if (line_len >= CPMVP_MAX_LINE_LEN - 24) /* 24 safety margin */
++    line_len = CPMVP_MAX_LINE_LEN - 25;
++  cpmvp_ctx.line_len = line_len;
++
++  char (*lines)[CPMVP_MAX_LINE_LEN] = cpmvp_ctx.out_lines;
++
++  /* init lines with spaces */
++  for (int it = 0; it < 6; it++) {
++    memset(lines[it], ' ', sizeof(char) * line_len);
++    lines[it][line_len] = '\0';
++  }
++
++  /* total progress bar? */
++  if (cpmvp_ctx.files_total > 1) {
++    /* init total progress bar */
++    lines[2][0] = '[';
++    lines[2][line_len - 8] = ']';
++    lines[2][line_len - 7] = ' ';
++    lines[2][line_len - 1] = '%';
++
++    /* total size */
++    lines[1][line_len - 11] = '/';
++    cpmvp_format_file_size(lines[1] + line_len - 9, cpmvp_ctx.size_total, true);
++
++    /* show how many files were written */
++    int sum_length = 0;
++    sum_length = sprintf(lines[1], "%d of %d files %s",
++      cpmvp_ctx.files_processed, cpmvp_ctx.files_total,
++      cpmvp_ctx.is_move ? "moved" : "copied");
++    lines[1][sum_length] = ' ';
++  }
++
++  /* truncate filename? */
++  int fn_length;
++  int src_name_len = strlen(src_name);
++  if (src_name_len > line_len - 22)
++    fn_length = sprintf(lines[4], "...%s", src_name + (src_name_len - line_len + 25));
++  else
++    fn_length = sprintf(lines[4], "%s", src_name);
++  lines[4][fn_length] = ' ';
++
++  /* filesize */
++  struct stat st;
++  stat(src_name, &st);
++  cpmvp_ctx.size_file_total = st.st_size;
++  cpmvp_ctx.size_file_written = 0;
++
++  lines[4][line_len - 11] = '/';
++  cpmvp_format_file_size(lines[4] + line_len - 9, cpmvp_ctx.size_file_total, true);
++
++  lines[5][0] = '[';
++  lines[5][line_len - 8] = ']';
++  lines[5][line_len - 7] = ' ';
++  lines[5][line_len - 1] = '%';
++
++  struct timeval cur_time;
++  gettimeofday(&cur_time, NULL);
++  cpmvp_ctx.time_file_start = cur_time;
++}
++
++void cpmvp_file_done( off_t bytes_written )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  cpmvp_ctx.size_written += bytes_written;
++  cpmvp_ctx.files_processed++;
++}
++
++void cpmvp_dir_moved( )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  cpmvp_ctx.dirs_processed++;
++}
++
++void cpmvp_print_maybe( off_t bytes_in_progress )
++{
++  if (!cpmvp_ctx.enabled)
++    return;
++
++  /* get elapsed time since last print */
++  struct timeval cur_time;
++  gettimeofday (&cur_time, NULL);
++  double sec_elapsed = cpmvp_sec_elapsed(cpmvp_ctx.printed_time, cur_time);
++
++  /* don't print too much */
++  if (sec_elapsed < CPMVP_REDRAW_TIME)
++    return;
++
++  off_t cur_size = cpmvp_ctx.size_written + bytes_in_progress;
++  off_t cur_fsize = cpmvp_ctx.size_file_written + bytes_in_progress;
++
++  /* calculate speed */
++  off_t speed = (off_t)((cur_size - cpmvp_ctx.printed_size) / sec_elapsed);
++  char s_speed[20];
++  cpmvp_format_file_size(s_speed, speed >= 0 ? speed : 0, true); // 9 chars
++
++  /* update last printed vars */
++  cpmvp_ctx.printed_time = cur_time;
++  cpmvp_ctx.printed_size = cur_size;
++
++  /* calculations based on transfer start times */
++  double elapsed_total_sec = cpmvp_sec_elapsed(cpmvp_ctx.time_start, cur_time);
++  double elapsed_file_sec = cpmvp_sec_elapsed(cpmvp_ctx.time_file_start, cur_time);
++
++  off_t remaining_total_size = cpmvp_ctx.size_total - cur_size;
++  off_t remaining_file_size = cpmvp_ctx.size_file_total - cur_fsize;
++
++  double cur_total_speed = (elapsed_total_sec > 0.
++    ? (double)cur_size / elapsed_total_sec
++    : 0.);
++  double cur_file_speed =
++    (elapsed_file_sec > 0.
++     && (cur_fsize > 0 || elapsed_file_sec > CPMVP_REDRAW_TIME)
++      ? (double)cur_fsize / elapsed_file_sec
++      : cur_total_speed); // use speed from total if file copy just began
++
++  long remaining_total_time = (long)(cur_total_speed > 0.
++    ? (double)remaining_total_size / cur_total_speed
++    : LONG_MAX);
++  long remaining_file_time = (long)(cur_file_speed > 0.
++    ? (double)remaining_file_size / cur_file_speed
++    : LONG_MAX);
++
++  /* print out */
++  char s_fmt_total_time[13];
++  char s_fmt_file_time[13];
++  cpmvp_format_time(s_fmt_total_time, remaining_total_time); // 12 chars max
++  cpmvp_format_time(s_fmt_file_time, remaining_file_time); // 12 chars max
++
++  char s_time[20] = "";
++  sprintf(s_time, "(ETA ~%s)", s_fmt_total_time); // 19 chars max
++
++  char (*lines)[CPMVP_MAX_LINE_LEN] = cpmvp_ctx.out_lines;
++  int line_len = cpmvp_ctx.line_len;
++
++  int len;
++  if (cpmvp_ctx.files_total > 1) {
++    len = sprintf(lines[1], "%d of %d files %s %-22s",
++      cpmvp_ctx.files_processed, cpmvp_ctx.files_total,
++      cpmvp_ctx.is_move ? "moved" : "copied", s_time);
++    lines[1][len] = ' '; // remove the NULL character
++
++    sprintf(s_time, "(ETA ~%s)", s_fmt_file_time); // 19 chars max
++  }
++
++  sprintf(lines[3], "%s at %s/s %-22s",
++    cpmvp_ctx.is_move ? "moving" : "copying", s_speed, s_time );
++
++  if (cpmvp_ctx.files_total > 1) {
++    /* total progress bar */
++    cpmvp_s_bar(lines[2], line_len, cur_size, cpmvp_ctx.size_total);
++
++    /* total transfer size (9 chars) */
++    len = cpmvp_format_file_size(lines[1] + line_len - 21, cur_size, true);
++    lines[1][line_len - 21 + len] = ' '; // remove the NULL char
++  }
++
++  /* file progress bar */
++  cpmvp_s_bar(lines[5], line_len, cur_fsize, cpmvp_ctx.size_file_total);
++
++  /* file transfer size (9 chars) */
++  len = cpmvp_format_file_size(lines[4] + line_len - 21, cur_fsize, true);
++  lines[4][line_len - 21 + len] = ' '; // remove the NULL char
++
++  /* print the lines */
++  for (int it = cpmvp_ctx.files_total > 1 ? 0 : 3; it < 6; it++) {
++    printf("\033[K%s\n", lines[it]);
++  }
++
++  if (cpmvp_ctx.files_total > 1)
++    printf("\r\033[6A");
++  else
++    printf("\r\033[3A");
++  fflush ( stdout );
++}
++
++
+diff --new-file -r -u orig/coreutils-9.9/src/cpmv-progress.h coreutils-9.9/src/cpmv-progress.h
+--- orig/coreutils-9.9/src/cpmv-progress.h	1970-01-01 01:00:00.000000000 +0100
++++ coreutils-9.9/src/cpmv-progress.h	2026-02-12 16:25:34.067281636 +0100
+@@ -0,0 +1,46 @@
++#ifndef CPMV_PROGRESS_H
++# define CPMV_PROGRESS_H
++
++#include <config.h>
++#include <stdio.h>
++#include <sys/types.h>
++
++#include "backupfile.h"
++#include "copy.h"
++
++#define CPMVP_MAX_LINE_LEN 1024
++#define CPMVP_REDRAW_TIME 0.1
++
++struct cpmv_progress_s {
++  char out_lines[6][CPMVP_MAX_LINE_LEN];
++  int line_len;
++  struct timeval printed_time;
++  off_t printed_size;
++
++  off_t size_total;
++  off_t size_written;
++  struct timeval time_start;
++
++  off_t size_file_total;
++  off_t size_file_written;
++  struct timeval time_file_start;
++
++  int dirs_processed;
++  int files_processed;
++  int files_total;
++
++  bool is_move;
++  bool enabled;
++};
++extern struct cpmv_progress_s cpmvp_ctx;
++
++void cpmvp_init( int n_files, char **file, const struct cp_options *cp_opts );
++void cpmvp_cleanup( bool clear_term );
++void cpmvp_interrupt_handler( int );
++void cpmvp_init_file_tx ( char const *src_name );
++void cpmvp_file_done( off_t bytes_written );
++void cpmvp_dir_moved( );
++void cpmvp_print_maybe( off_t bytes_in_progress );
++
++#endif
++
+diff --new-file -r -u orig/coreutils-9.9/src/local.mk coreutils-9.9/src/local.mk
+--- orig/coreutils-9.9/src/local.mk	2025-11-01 16:07:15.000000000 +0100
++++ coreutils-9.9/src/local.mk	2026-01-29 19:01:24.592282262 +0100
+@@ -41,6 +41,7 @@
+ noinst_HEADERS =		\
+   src/chown.h			\
+   src/chown-core.h		\
++  src/cpmv-progress.h	\
+   src/copy.h			\
+   src/cp-hash.h			\
+   src/dircolors.h		\
+@@ -357,6 +358,7 @@
+   src/selinux.h
+ 
+ copy_sources = \
++  src/cpmv-progress.c \
+   src/copy.c \
+   src/copy-file-data.c \
+   src/cp-hash.c \
+diff --new-file -r -u orig/coreutils-9.9/src/mv.c coreutils-9.9/src/mv.c
+--- orig/coreutils-9.9/src/mv.c	2025-01-07 18:31:45.000000000 +0100
++++ coreutils-9.9/src/mv.c	2026-02-12 16:36:54.164806418 +0100
+@@ -21,12 +21,14 @@
+ #include <getopt.h>
+ #include <sys/types.h>
+ #include <selinux/label.h>
++#include <signal.h> // progress mod
+ 
+ #include "system.h"
+ #include "argmatch.h"
+ #include "assure.h"
+ #include "backupfile.h"
+ #include "copy.h"
++#include "cpmv-progress.h" // progress mod
+ #include "cp-hash.h"
+ #include "filenamecat.h"
+ #include "remove.h"
+@@ -80,6 +82,7 @@
+   {"target-directory", required_argument, nullptr, 't'},
+   {"update", optional_argument, nullptr, 'u'},
+   {"verbose", no_argument, nullptr, 'v'},
++  {"progress-bar", no_argument, nullptr, 'g'}, // progress mod
+   {GETOPT_HELP_OPTION_DECL},
+   {GETOPT_VERSION_OPTION_DECL},
+   {nullptr, 0, nullptr, 0}
+@@ -171,9 +174,34 @@
+ {
+   bool copy_into_self;
+   bool rename_succeeded;
++  /* BEGIN progress mod */
++  bool is_source_dir = false;
++  if (x->rename_errno != 0) {
++    struct stat sb;
++    int fd = target_directory_operand (source, &sb);
++    is_source_dir = target_dirfd_valid (fd);
++  }
++  /* END progress mod */
++
+   bool ok = copy (source, dest, dest_dirfd, dest_relname, 0, x,
+                   &copy_into_self, &rename_succeeded);
+ 
++  /* BEGIN progress mod */
++  if (x->rename_errno != 0 && ok) {
++    struct stat sb;
++    if (rename_succeeded) {
++        if (is_source_dir)
++          cpmvp_dir_moved (); // renamed directory
++        else
++          cpmvp_file_done (0); // renamed file (written 0 bytes)
++    } // if !rename_succeeded cpmvp_file_done was called in copy
++
++    if (x->last_file)
++      /* don't clean up terminal on rename as status was not written */
++      cpmvp_cleanup (!rename_succeeded);
++  }
++  /* END progress mod */
++
+   if (ok)
+     {
+       char const *dir_to_remove;
+@@ -277,9 +305,11 @@
+       fputs (_("\
+       --exchange               exchange source and destination\n\
+ "), stdout);
++      /* progress mod : -g help text below */
+       fputs (_("\
+   -f, --force                  do not prompt before overwriting\n\
+   -i, --interactive            prompt before overwrite\n\
++  -g, --progress-bar           add progress-bar\n\
+   -n, --no-clobber             do not overwrite an existing file\n\
+ If you specify more than one of -i, -f, -n, only the final one takes effect.\n\
+ "), stdout);
+@@ -341,7 +371,8 @@
+   /* Try to disable the ability to unlink a directory.  */
+   priv_set_remove_linkdir ();
+ 
+-  while ((c = getopt_long (argc, argv, "bfint:uvS:TZ", long_options, nullptr))
++  /* progress mod : g option */
++  while ((c = getopt_long (argc, argv, "bfgint:uvS:TZ", long_options, nullptr))
+          != -1)
+     {
+       switch (c)
+@@ -354,6 +385,12 @@
+         case 'f':
+           x.interactive = I_ALWAYS_YES;
+           break;
++        /* BEGIN progress mod */
++        case 'g':
++          cpmvp_ctx.enabled = true;
++          signal(SIGINT, cpmvp_interrupt_handler);
++          break;
++        /* END progress mod */
+         case 'i':
+           x.interactive = I_ASK_USER;
+           break;
+@@ -516,6 +553,9 @@
+ 
+   hash_init ();
+ 
++  if (x.rename_errno != 0) // progress mod
++    cpmvp_init ((target_directory ? n_files : 1), file, &x); // progress mod
++
+   if (target_directory)
+     {
+       /* Initialize the hash table only if we'll need it.
