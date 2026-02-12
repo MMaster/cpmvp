@@ -65,11 +65,11 @@ Using this can introduce significant delay before files are moved or copied if y
 
 ### Change your cp and mv behaviour
 
-You can install the binaries and use eg `cpg -g` and `mvg -g` instead of cp and mv:
+You can install the binaries and use eg `cpmvp-cp -g` and `cpmvp-mv -g` instead of cp and mv:
 
 ```
-sudo mv ./cpmvp/cpmvp-cp /usr/local/bin/cpg
-sudo mv ./cpmvp/cpmvp-mv /usr/local/bin/mvg
+sudo mv ./cpmvp/cpmvp-cp /usr/local/bin/
+sudo mv ./cpmvp/cpmvp-mv /usr/local/bin/
 ```
 
 Progress bar does not work with reflink (introduced v9.0 onwards). So reflink is disabled if using progress bar, left unchanged otherwise.
@@ -79,22 +79,22 @@ Progress bar does not work with reflink (introduced v9.0 onwards). So reflink is
 You can install the binaries and create aliases for bash (or whatever you use)
 
 ```
-sudo mv ./cpmvp/cpmvp-cp /usr/local/bin/cpg
-sudo mv ./cpmvp/cpmvp-mv /usr/local/bin/mvg
+sudo mv ./cpmvp/cpmvp-cp /usr/local/bin/
+sudo mv ./cpmvp/cpmvp-mv /usr/local/bin/
 ```
 
 Bash:
 
 ```
-echo -e 'alias cp=\x27/usr/local/bin/cpg -g\x27' >> ~/.bashrc
-echo -e 'alias mv=\x27/usr/local/bin/mvg -g\x27' >> ~/.bashrc
+echo -e 'alias cp=\x27/usr/local/bin/cpmvp-cp -g\x27' >> ~/.bashrc
+echo -e 'alias mv=\x27/usr/local/bin/cpmvp-mv -g\x27' >> ~/.bashrc
 ```
 
 Fish:
 
 ```
-echo alias cp '/usr/local/bin/cpg -g' >> ~/.config/fish/config.fish
-echo alias mv '/usr/local/bin/mvg -g' >> ~/.config/fish/config.fish
+echo alias cp '/usr/local/bin/cpmvp-cp -g' >> ~/.config/fish/config.fish
+echo alias mv '/usr/local/bin/cpmvp-mv -g' >> ~/.config/fish/config.fish
 ```
 
 ```
